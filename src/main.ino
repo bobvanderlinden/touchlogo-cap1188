@@ -39,6 +39,7 @@ typedef struct {
   unsigned long touchTime;
 } TouchState;
 unsigned long lastSampleTime = 0;
+bool waitForRelease = false;
 
 TouchState touchStates[SENSOR_COUNT];
 
@@ -58,6 +59,7 @@ void saveConfigCallback () {
 
 void resetTouchStates() {
   memset(touchStates, 0, sizeof(touchStates));
+  waitForRelease = false;
 }
 
 void publishEvent(const char *eventName) {
@@ -201,10 +203,11 @@ void loop() {
   mqttClient.loop();
 
   unsigned int now = millis();
-  if (now - lastSampleTime < 100) {
+  if (now - lastSampleTime < 50) {
     return;
   }
   lastSampleTime = now;
+
   uint8_t newTouchState = cap.touched();
   bool anyTouched = false;
   
@@ -219,7 +222,11 @@ void loop() {
     anyTouched = anyTouched || isTouching;
   }
 
-  if (!anyTouched) {
+  if (waitForRelease) {
+    if (anyTouched) {
+      return;
+    }
+    resetTouchStates();
     return;
   }
 
@@ -265,14 +272,17 @@ void loop() {
     // Touch
     publishEvent("touch");
     resetTouchStates();
+    waitForRelease = true;
   } else if (diffTouchTime < 2000 && isSwipeLeft) {
     // Swipe left
     publishEvent("swipe_left");
     resetTouchStates();
+    waitForRelease = true;
   } else if (diffTouchTime < 2000 && isSwipeRight) {
     // Swipe right
     publishEvent("swipe_right");
     resetTouchStates();
+    waitForRelease = true;
   } else {
     Serial.print("no touch");
   }
