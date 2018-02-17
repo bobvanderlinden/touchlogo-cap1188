@@ -1,0 +1,6 @@
+{
+  "terminal.integrated.env.linux": {
+    "PATH": "/home/bob/.platformio/penv/bin:/home/bob/.platformio/penv:/home/bob/bin:/run/wrappers/bin:/etc/per-user-pkgs/bob/bin:/home/bob/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/home/bob/.bin:/home/bob/.cabal/bin:/home/bob/.rvm/bin",
+    "PLATFORMIO_CALLER": "vscode"
+  }
+}
