@@ -8,13 +8,18 @@ void setup() {
   Serial.begin(9600);
   Serial.println("CAP1188 test!");
 
-  // Initialize the sensor, if using i2c you can pass in the i2c address
-  // if (!cap.begin(0x28)) {
-  if (!cap.begin()) {
+  if (!cap.begin(43)) {
     Serial.println("CAP1188 not found");
     while (1);
   }
   Serial.println("CAP1188 found!");
+
+  cap.writeRegister(0x00,0b11000000);
+  cap.writeRegister(0x71,0xff);
+  cap.writeRegister(0x72,0xff);
+  cap.writeRegister(0x73,0xff);
+  cap.writeRegister(0x81,0b10101010);//Set led breath or pulse.
+  cap.writeRegister(0x82,0b00000010);
 }
 
 void loop() {
