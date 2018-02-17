@@ -39,6 +39,7 @@ typedef struct {
   unsigned long touchTime;
 } TouchState;
 unsigned long lastSampleTime = 0;
+unsigned long lastLedTime = 0;
 
 TouchState touchStates[SENSOR_COUNT];
 
@@ -195,19 +196,29 @@ void reconnectMqtt() {
 void loop() {
   ArduinoOTA.handle();
 
+
+
   if (!mqttClient.connected()) {
     reconnectMqtt();
   }
   mqttClient.loop();
 
   unsigned int now = millis();
+
+
   if (now - lastSampleTime < 100) {
     return;
   }
+
+  if(millis()-lastLedTime>1000){
+    lastLedTime = 2147483647;
+    cap.writeRegister(0x74,0b00000000);
+  }
+
   lastSampleTime = now;
   uint8_t newTouchState = cap.touched();
   bool anyTouched = false;
-  
+
   for (uint8_t i=0; i<SENSOR_COUNT; i++) {
     TouchState &state = touchStates[i];
     bool isTouching = isSensorTouching(newTouchState, i);
@@ -242,7 +253,7 @@ void loop() {
   for(uint8_t i=1;i<SENSOR_COUNT;i++) {
     TouchState &stateLeft = touchStates[i-1];
     TouchState &stateRight = touchStates[i];
-    
+
     isSwipeRight = isSwipeRight && stateLeft.touchTime <= stateRight.touchTime;
     isSwipeLeft = isSwipeLeft && stateLeft.touchTime >= stateRight.touchTime;
   }
@@ -251,6 +262,7 @@ void loop() {
   if (now - minTouchTime > 5000) {
     return;
   }
+
 
   Serial.print("diffTouchTime: ");
   Serial.print(diffTouchTime);
@@ -264,14 +276,20 @@ void loop() {
   if (diffTouchTime < 200) {
     // Touch
     publishEvent("touch");
+    cap.writeRegister(0x74,0b01100000);
+    lastLedTime = millis();
     resetTouchStates();
   } else if (diffTouchTime < 2000 && isSwipeLeft) {
     // Swipe left
     publishEvent("swipe_left");
+    cap.writeRegister(0x74,0b01000000);
+    lastLedTime = millis();
     resetTouchStates();
   } else if (diffTouchTime < 2000 && isSwipeRight) {
     // Swipe right
     publishEvent("swipe_right");
+    cap.writeRegister(0x74,0b00100000);
+    lastLedTime = millis();
     resetTouchStates();
   } else {
     Serial.print("no touch");
