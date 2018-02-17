@@ -74,6 +74,26 @@ void setup() {
   Serial.begin(115200);
   Serial.println("CAP1188 test!");
 
+  if (!cap.begin(43)) {
+    Serial.println("CAP1188 not found");
+    while (1);
+  }
+  Serial.println("CAP1188 found!");
+
+  cap.writeRegister(0x00,0b10000000); //sensitivity control
+  cap.writeRegister(0x26,0x1f);
+  cap.writeRegister(0x71,0xff);       //Led output register
+  cap.writeRegister(0x72,0x1f);       //Led linking register
+  cap.writeRegister(0x73,0xff);       //Led polarity register
+  cap.writeRegister(0x81,0b00000000); //Set led breath or pulse.
+  cap.writeRegister(0x82,0b00000000);
+  cap.writeRegister(0x94,0b00001001);
+  cap.writeRegister(0x93,0xf0);       // Max-min duty cycle set
+  cap.writeRegister(0x86,0x20);       // Breathing speed
+
+  cap.writeRegister(0x81, 0x00);
+
+
   if (SPIFFS.begin()) {
     Serial.println("mounted file system");
     if (SPIFFS.exists("/config.json")) {
@@ -110,17 +130,6 @@ void setup() {
     Serial.println("failed to mount FS");
   }
   //end read
-
-  cap.writeRegister(0x00,0b10000000); //sensitivity control
-  cap.writeRegister(0x26,0x1f);
-  cap.writeRegister(0x71,0xff);       //Led output register
-  cap.writeRegister(0x72,0x1f);       //Led linking register
-  cap.writeRegister(0x73,0xff);       //Led polarity register
-  cap.writeRegister(0x81,0b00000000); //Set led breath or pulse.
-  cap.writeRegister(0x82,0b00000000);
-  cap.writeRegister(0x94,0b00001001);
-  cap.writeRegister(0x93,0xf0);       // Max-min duty cycle set
-  cap.writeRegister(0x86,0x20);       // Breathing speed
 
   ArduinoOTA.setHostname(hostname);
   ArduinoOTA.begin();
@@ -169,14 +178,6 @@ void setup() {
     //end save
   }
 
-  if (!cap.begin(43)) {
-    Serial.println("CAP1188 not found");
-    while (1);
-  }
-  Serial.println("CAP1188 found!");
-
-  cap.writeRegister(0x81, 0x00);
-
   mqttClient.setServer(parameter_mqtt_server.getValue(), atoi(parameter_mqtt_port.getValue()));
 }
 
@@ -201,6 +202,15 @@ void reconnectMqtt() {
       delay(5000);
     }
   }
+}
+
+int sgn(int val) {
+    return
+      val < 0
+        ? -1
+        : val > 0
+          ? 1
+          : 0;
 }
 
 void loop() {
@@ -256,14 +266,12 @@ void loop() {
   }
 
   unsigned long diffTouchTime = maxTouchTime - minTouchTime;
-  bool isSwipeLeft = true;
-  bool isSwipeRight = true;
+  int movement = 0;
   for(uint8_t i=1;i<SENSOR_COUNT;i++) {
     TouchState &stateLeft = touchStates[i-1];
     TouchState &stateRight = touchStates[i];
 
-    isSwipeRight = isSwipeRight && stateLeft.touchTime <= stateRight.touchTime;
-    isSwipeLeft = isSwipeLeft && stateLeft.touchTime >= stateRight.touchTime;
+    movement += sgn(stateRight.touchTime - stateLeft.touchTime);
   }
 
 
@@ -271,34 +279,24 @@ void loop() {
     return;
   }
 
-
-  Serial.print("diffTouchTime: ");
-  Serial.print(diffTouchTime);
-
-  Serial.print("isSwipeRight: ");
-  Serial.print(isSwipeRight);
-
-  Serial.print("isSwipeLeft: ");
-  Serial.print(isSwipeLeft);
-
-  if (diffTouchTime < 200) {
+  if (diffTouchTime < 150) {
     // Touch
     publishEvent("touch");
     cap.writeRegister(0x74,0b01100000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
-  } else if (diffTouchTime < 2000 && isSwipeLeft) {
+  } else if (diffTouchTime < 2000 && movement <= -2) {
     // Swipe left
     publishEvent("swipe_left");
-    cap.writeRegister(0x74,0b01000000);
+    cap.writeRegister(0x74,0b00100000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
-  } else if (diffTouchTime < 2000 && isSwipeRight) {
+  } else if (diffTouchTime < 2000 && movement >= 2) {
     // Swipe right
     publishEvent("swipe_right");
-    cap.writeRegister(0x74,0b00100000);
+    cap.writeRegister(0x74,0b01000000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
