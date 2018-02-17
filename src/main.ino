@@ -25,12 +25,14 @@ WiFiManagerParameter parameter_mqtt_topic("topic", "mqtt topic", "/touchlogo", 4
 WiFiManagerParameter parameter_mqtt_port("port", "mqtt port", "1883", 6);
 WiFiManagerParameter parameter_mqtt_user("user", "mqtt user", "", 20);
 WiFiManagerParameter parameter_mqtt_pass("pass", "mqtt pass", "", 20);
+WiFiManagerParameter parameter_hostname("hostname", "hostname", "touchlogo", 40);
 
 char mqtt_server[40] = "192.168.1.27";
 char mqtt_topic[40] = "/touchlogo";
 uint16_t mqtt_port = 1883;
 char mqtt_user[20] = "";
 char mqtt_pass[20] = "";
+char hostname[40] = "";
 
 const int SENSOR_COUNT = 5;
 
@@ -95,6 +97,9 @@ void setup() {
           mqtt_port = json.get<uint16_t>("mqtt_port");
           strcpy(mqtt_user, json["mqtt_user"]);
           strcpy(mqtt_pass, json["mqtt_pass"]);
+          if (json.containsKey("hostname")) {
+            strcpy(hostname, json["hostname"]);
+          }
         } else {
           Serial.println("failed to load json config");
         }
@@ -116,7 +121,7 @@ void setup() {
   cap.writeRegister(0x93,0xf0);       // Max-min duty cycle set
   cap.writeRegister(0x86,0x20);       // Breathing speed
 
-  ArduinoOTA.setHostname("hiptouchlogo");
+  ArduinoOTA.setHostname(hostname);
   ArduinoOTA.begin();
 
   wifiManager.addParameter(&parameter_mqtt_topic);
@@ -124,6 +129,7 @@ void setup() {
   wifiManager.addParameter(&parameter_mqtt_port);
   wifiManager.addParameter(&parameter_mqtt_user);
   wifiManager.addParameter(&parameter_mqtt_pass);
+  wifiManager.addParameter(&parameter_hostname);
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
   wifiManager.setAPCallback(configModeCallback);
@@ -139,6 +145,7 @@ void setup() {
   strcpy(mqtt_user, parameter_mqtt_user.getValue());
   strcpy(mqtt_pass, parameter_mqtt_pass.getValue());
   strcpy(mqtt_topic, parameter_mqtt_topic.getValue());
+  strcpy(hostname, parameter_hostname.getValue());
 
   if (shouldSaveConfig) {
     DynamicJsonBuffer jsonBuffer;
@@ -148,6 +155,7 @@ void setup() {
     json["mqtt_user"] = mqtt_user;
     json["mqtt_pass"] = mqtt_pass;
     json["mqtt_topic"] = mqtt_topic;
+    json["hostname"] = hostname;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -228,11 +236,6 @@ void loop() {
     }
     resetTouchStates();
     return;
-  }
-
-  for (uint8_t i=0;i<SENSOR_COUNT; i++) {
-    TouchState &state = touchStates[i];
-    Serial.print(state.touched ? "1" : "0");
   }
 
   unsigned long minTouchTime = 0xffffffff;
