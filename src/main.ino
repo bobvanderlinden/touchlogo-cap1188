@@ -47,6 +47,7 @@ TouchState touchStates[SENSOR_COUNT];
 bool shouldSaveConfig = false;
 
 void configModeCallback (WiFiManager *myWiFiManager) {
+  cap.writeRegister(0x72, 0x1B);
   cap.writeRegister(0x81, 0x30);
   Serial.println("Entered config mode");
   Serial.println(WiFi.softAPIP());
@@ -55,6 +56,8 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 }
 
 void saveConfigCallback () {
+  cap.writeRegister(0x72, 0x1f);
+//  cap.writeRegister(0x81, 0x30);
   shouldSaveConfig = true;
 }
 
