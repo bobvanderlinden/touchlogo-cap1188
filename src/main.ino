@@ -19,6 +19,7 @@ Adafruit_CAP1188 cap = Adafruit_CAP1188();
 WiFiManager wifiManager;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+std::unique_ptr<ESP8266WebServer> webServer;
 
 WiFiManagerParameter parameter_mqtt_server("server", "mqtt server", "192.168.1.27", 40);
 WiFiManagerParameter parameter_mqtt_topic("topic", "mqtt topic", "/touchlogo", 40);
@@ -179,6 +180,25 @@ void setup() {
   }
 
   mqttClient.setServer(parameter_mqtt_server.getValue(), atoi(parameter_mqtt_port.getValue()));
+
+  webServer.reset(new ESP8266WebServer(WiFi.localIP(), 80));
+  webServer->on("/", []() {
+    webServer->send(200, "text/plain",
+    "/settings/reset   Reset all settings\n"
+    "/calibrate        Calibrate CAP\n");
+  });
+  webServer->on("/settings/reset", []() {
+    wifiManager.resetSettings();
+    SPIFFS.remove("/config.json");
+    webServer->send(200, "text/plain", "ok");
+    delay(1000);
+    ESP.reset();
+  });
+  webServer->on("/calibrate", []() {
+    cap.writeRegister(0x26, 0x1f);
+    webServer->send(200, "text/plain", "ok");
+  });
+  webServer->begin();
 }
 
 inline bool isSensorTouching(uint8_t capState, int sensorIndex) {
@@ -216,7 +236,7 @@ int sgn(int val) {
 void loop() {
   ArduinoOTA.handle();
 
-
+  webServer->handleClient();
 
   if (!mqttClient.connected()) {
     reconnectMqtt();
