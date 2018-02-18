@@ -19,18 +19,21 @@ Adafruit_CAP1188 cap = Adafruit_CAP1188();
 WiFiManager wifiManager;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+std::unique_ptr<ESP8266WebServer> webServer;
 
 WiFiManagerParameter parameter_mqtt_server("server", "mqtt server", "192.168.1.27", 40);
 WiFiManagerParameter parameter_mqtt_topic("topic", "mqtt topic", "/touchlogo", 40);
 WiFiManagerParameter parameter_mqtt_port("port", "mqtt port", "1883", 6);
 WiFiManagerParameter parameter_mqtt_user("user", "mqtt user", "", 20);
 WiFiManagerParameter parameter_mqtt_pass("pass", "mqtt pass", "", 20);
+WiFiManagerParameter parameter_hostname("hostname", "hostname", "touchlogo", 40);
 
 char mqtt_server[40] = "192.168.1.27";
 char mqtt_topic[40] = "/touchlogo";
 uint16_t mqtt_port = 1883;
 char mqtt_user[20] = "";
 char mqtt_pass[20] = "";
+char hostname[40] = "";
 
 const int SENSOR_COUNT = 5;
 
@@ -75,6 +78,26 @@ void setup() {
   Serial.begin(115200);
   Serial.println("CAP1188 test!");
 
+  if (!cap.begin(43)) {
+    Serial.println("CAP1188 not found");
+    while (1);
+  }
+  Serial.println("CAP1188 found!");
+
+  cap.writeRegister(0x00,0b10000000); //sensitivity control
+  cap.writeRegister(0x26,0x1f);
+  cap.writeRegister(0x71,0xff);       //Led output register
+  cap.writeRegister(0x72,0x1f);       //Led linking register
+  cap.writeRegister(0x73,0xff);       //Led polarity register
+  cap.writeRegister(0x81,0b00000000); //Set led breath or pulse.
+  cap.writeRegister(0x82,0b00000000);
+  cap.writeRegister(0x94,0b00001001);
+  cap.writeRegister(0x93,0xf0);       // Max-min duty cycle set
+  cap.writeRegister(0x86,0x20);       // Breathing speed
+
+  cap.writeRegister(0x81, 0x00);
+
+
   if (SPIFFS.begin()) {
     Serial.println("mounted file system");
     if (SPIFFS.exists("/config.json")) {
@@ -99,6 +122,9 @@ void setup() {
           mqtt_port = json.get<uint16_t>("mqtt_port");
           strcpy(mqtt_user, json["mqtt_user"]);
           strcpy(mqtt_pass, json["mqtt_pass"]);
+          if (json.containsKey("hostname")) {
+            strcpy(hostname, json["hostname"]);
+          }
         } else {
           Serial.println("failed to load json config");
         }
@@ -109,18 +135,7 @@ void setup() {
   }
   //end read
 
-  cap.writeRegister(0x00,0b10000000); //sensitivity control
-  cap.writeRegister(0x26,0x1f);
-  cap.writeRegister(0x71,0xff);       //Led output register
-  cap.writeRegister(0x72,0x1f);       //Led linking register
-  cap.writeRegister(0x73,0xff);       //Led polarity register
-  cap.writeRegister(0x81,0b00000000); //Set led breath or pulse.
-  cap.writeRegister(0x82,0b00000000);
-  cap.writeRegister(0x94,0b00001001);
-  cap.writeRegister(0x93,0xf0);       // Max-min duty cycle set
-  cap.writeRegister(0x86,0x20);       // Breathing speed
-
-  ArduinoOTA.setHostname("hiptouchlogo");
+  ArduinoOTA.setHostname(hostname);
   ArduinoOTA.begin();
 
   wifiManager.addParameter(&parameter_mqtt_topic);
@@ -128,6 +143,7 @@ void setup() {
   wifiManager.addParameter(&parameter_mqtt_port);
   wifiManager.addParameter(&parameter_mqtt_user);
   wifiManager.addParameter(&parameter_mqtt_pass);
+  wifiManager.addParameter(&parameter_hostname);
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
   wifiManager.setAPCallback(configModeCallback);
@@ -143,6 +159,7 @@ void setup() {
   strcpy(mqtt_user, parameter_mqtt_user.getValue());
   strcpy(mqtt_pass, parameter_mqtt_pass.getValue());
   strcpy(mqtt_topic, parameter_mqtt_topic.getValue());
+  strcpy(hostname, parameter_hostname.getValue());
 
   if (shouldSaveConfig) {
     DynamicJsonBuffer jsonBuffer;
@@ -152,6 +169,7 @@ void setup() {
     json["mqtt_user"] = mqtt_user;
     json["mqtt_pass"] = mqtt_pass;
     json["mqtt_topic"] = mqtt_topic;
+    json["hostname"] = hostname;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -164,15 +182,26 @@ void setup() {
     //end save
   }
 
-  if (!cap.begin(43)) {
-    Serial.println("CAP1188 not found");
-    while (1);
-  }
-  Serial.println("CAP1188 found!");
-
-  cap.writeRegister(0x81, 0x00);
-
   mqttClient.setServer(parameter_mqtt_server.getValue(), atoi(parameter_mqtt_port.getValue()));
+
+  webServer.reset(new ESP8266WebServer(WiFi.localIP(), 80));
+  webServer->on("/", []() {
+    webServer->send(200, "text/plain",
+    "/settings/reset   Reset all settings\n"
+    "/calibrate        Calibrate CAP\n");
+  });
+  webServer->on("/settings/reset", []() {
+    wifiManager.resetSettings();
+    SPIFFS.remove("/config.json");
+    webServer->send(200, "text/plain", "ok");
+    delay(1000);
+    ESP.reset();
+  });
+  webServer->on("/calibrate", []() {
+    cap.writeRegister(0x26, 0x1f);
+    webServer->send(200, "text/plain", "ok");
+  });
+  webServer->begin();
 }
 
 inline bool isSensorTouching(uint8_t capState, int sensorIndex) {
@@ -198,10 +227,19 @@ void reconnectMqtt() {
   }
 }
 
+int sgn(int val) {
+    return
+      val < 0
+        ? -1
+        : val > 0
+          ? 1
+          : 0;
+}
+
 void loop() {
   ArduinoOTA.handle();
 
-
+  webServer->handleClient();
 
   if (!mqttClient.connected()) {
     reconnectMqtt();
@@ -242,11 +280,6 @@ void loop() {
     return;
   }
 
-  for (uint8_t i=0;i<SENSOR_COUNT; i++) {
-    TouchState &state = touchStates[i];
-    Serial.print(state.touched ? "1" : "0");
-  }
-
   unsigned long minTouchTime = 0xffffffff;
   unsigned long maxTouchTime = 0;
   for (uint8_t i=0;i<SENSOR_COUNT;i++) {
@@ -256,14 +289,12 @@ void loop() {
   }
 
   unsigned long diffTouchTime = maxTouchTime - minTouchTime;
-  bool isSwipeLeft = true;
-  bool isSwipeRight = true;
+  int movement = 0;
   for(uint8_t i=1;i<SENSOR_COUNT;i++) {
     TouchState &stateLeft = touchStates[i-1];
     TouchState &stateRight = touchStates[i];
 
-    isSwipeRight = isSwipeRight && stateLeft.touchTime <= stateRight.touchTime;
-    isSwipeLeft = isSwipeLeft && stateLeft.touchTime >= stateRight.touchTime;
+    movement += sgn(stateRight.touchTime - stateLeft.touchTime);
   }
 
 
@@ -271,34 +302,24 @@ void loop() {
     return;
   }
 
-
-  Serial.print("diffTouchTime: ");
-  Serial.print(diffTouchTime);
-
-  Serial.print("isSwipeRight: ");
-  Serial.print(isSwipeRight);
-
-  Serial.print("isSwipeLeft: ");
-  Serial.print(isSwipeLeft);
-
-  if (diffTouchTime < 200) {
+  if (diffTouchTime < 150) {
     // Touch
     publishEvent("touch");
     cap.writeRegister(0x74,0b01100000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
-  } else if (diffTouchTime < 2000 && isSwipeLeft) {
+  } else if (diffTouchTime < 2000 && movement <= -2) {
     // Swipe left
     publishEvent("swipe_left");
-    cap.writeRegister(0x74,0b01000000);
+    cap.writeRegister(0x74,0b00100000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
-  } else if (diffTouchTime < 2000 && isSwipeRight) {
+  } else if (diffTouchTime < 2000 && movement >= 2) {
     // Swipe right
     publishEvent("swipe_right");
-    cap.writeRegister(0x74,0b00100000);
+    cap.writeRegister(0x74,0b01000000);
     lastLedTime = millis();
     resetTouchStates();
     waitForRelease = true;
