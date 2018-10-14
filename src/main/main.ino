@@ -41,13 +41,33 @@ typedef struct {
   bool touched;
   unsigned long touchTime;
 } TouchState;
+
+typedef struct {
+  int movement;
+  unsigned long minTouchTime;
+  unsigned long maxTouchTime;
+  unsigned long diffTouchTime;
+  uint8_t numberTouched;
+}totalTouchStateType;
+
+
 unsigned long lastSampleTime = 0;
 unsigned long lastLedTime = 0;
 unsigned long lastMqttConnectTime = (unsigned long) -10000;
-bool waitForRelease = false;
 
 TouchState touchStates[SENSOR_COUNT];
+totalTouchStateType totalTouchState;
 
+typedef enum buttonstates {
+  BUTTON_RELEASED,
+  BUTTON_PRESSED,
+  BUTTON_LONGPRESSED,
+  BUTTON_SWIPED_LEFT,
+  BUTTON_SWIPED_RIGHT,
+}ButtonStates;
+
+
+ButtonStates buttonState = BUTTON_RELEASED;
 bool shouldSaveConfig = false;
 
 void configModeCallback (WiFiManager *myWiFiManager) {
@@ -67,17 +87,12 @@ void saveConfigCallback () {
   shouldSaveConfig = true;
 }
 
-void resetTouchStates() {
-  memset(touchStates, 0, sizeof(touchStates));
-  waitForRelease = false;
-}
-
 void publishEvent(const char *eventName) {
   mqttClient.publish(mqtt_topic, eventName, true);
 }
 
 void setup() {
-  resetTouchStates();
+//  resetTouchStates();
   Serial.begin(115200);
   Serial.println("CAP1188 test!");
 
@@ -243,7 +258,7 @@ void reconnectMqtt() {
   }
 }
 
-int sgn(int val) {
+int sgn(signed long val) {
     return
       val < 0
         ? -1
@@ -283,73 +298,110 @@ void loop() {
 
   lastSampleTime = now;
 
-  uint8_t newTouchState = cap.touched();
-  bool anyTouched = false;
+  analysePress();
+  
+  switch(buttonState){
+    case BUTTON_RELEASED:
+      if(totalTouchState.numberTouched){
+        buttonState = BUTTON_PRESSED;
+        Serial.println("Button pressed");
+        totalTouchState.movement = 0;  
+      }
+      break;
+    case BUTTON_LONGPRESSED:
+      if(totalTouchState.numberTouched==0){
+        buttonState = BUTTON_RELEASED;
+        Serial.println("Longpress released");
+      }
+     break;
+    case BUTTON_PRESSED:
+      if (now-totalTouchState.minTouchTime > 2000 && totalTouchState.diffTouchTime < 200){
+        buttonState = BUTTON_LONGPRESSED;
+          // Long Touch
+          publishEvent("longtouch");
+          cap.writeRegister(0x74,0b01100000);
+          lastLedTime = millis();     
+          Serial.println("Longpress");
 
+      } 
+      if (totalTouchState.numberTouched==0){
+         printTouchState();
+         Serial.print("Button released: ");   
+         if (totalTouchState.diffTouchTime < 200) {
+          // Touch
+          Serial.println("touched");
+          publishEvent("touch");
+          cap.writeRegister(0x74,0b01100000);
+          lastLedTime = millis();
+        } else if (totalTouchState.diffTouchTime < 2000 && totalTouchState.movement <= -4) {
+          // Swipe left
+          publishEvent("swipe_left");
+          Serial.println("swipe left");
+          cap.writeRegister(0x74,0b00100000);
+          lastLedTime = millis();
+        } else if (totalTouchState.diffTouchTime < 2000 && totalTouchState.movement >= 4) {
+          // Swipe right
+          publishEvent("swipe_right");
+          Serial.println("swipe right");          
+          cap.writeRegister(0x74,0b01000000);
+          lastLedTime = millis();
+        } else {
+          Serial.println("no touch");
+        }
+        buttonState = BUTTON_RELEASED;
+      }
+      break;
+    default:
+      buttonState = BUTTON_RELEASED;
+      break;
+  }  
+}
+
+
+StaticJsonBuffer<200> jsonBuffer;
+  
+void printTouchState(void){
+    jsonBuffer.clear();
+    JsonObject& json = jsonBuffer.createObject();
+    json["mov"] = totalTouchState.movement;
+    json["minT"] = totalTouchState.minTouchTime;
+    json["maxT"] = totalTouchState.maxTouchTime;
+    json["diffT"] = totalTouchState.diffTouchTime;
+    json["numberTouched"] = totalTouchState.numberTouched;
+    json.printTo(Serial);
+}
+
+void analysePress(void){
+  uint8_t newTouchState = cap.touched();
+  totalTouchState.numberTouched = 0;
   for (uint8_t i=0; i<SENSOR_COUNT; i++) {
     TouchState &state = touchStates[i];
     bool isTouching = isSensorTouching(newTouchState, i);
     // Has sensor changed to touched?
     if (state.touched != isTouching && isTouching) {
-      state.touchTime = now;
+      state.touchTime = millis();
+    }
+    if(isTouching){
+       totalTouchState.numberTouched++;
     }
     state.touched = isTouching;
-    anyTouched = anyTouched || isTouching;
   }
-
-  if (waitForRelease) {
-    if (anyTouched) {
-      return;
-    }
-    resetTouchStates();
-    return;
-  }
-
-  unsigned long minTouchTime = 0xffffffff;
-  unsigned long maxTouchTime = 0;
+  
+  
+  totalTouchState.minTouchTime = 0xffffffff;
+  totalTouchState.maxTouchTime = 0;
   for (uint8_t i=0;i<SENSOR_COUNT;i++) {
     TouchState &state = touchStates[i];
-    minTouchTime = min(minTouchTime, state.touchTime);
-    maxTouchTime = max(maxTouchTime, state.touchTime);
+    totalTouchState.minTouchTime = min(totalTouchState.minTouchTime, state.touchTime);
+    totalTouchState.maxTouchTime = max(totalTouchState.maxTouchTime, state.touchTime);
   }
+  totalTouchState.diffTouchTime = totalTouchState.maxTouchTime - totalTouchState.minTouchTime;
 
-  unsigned long diffTouchTime = maxTouchTime - minTouchTime;
-  int movement = 0;
-  for(uint8_t i=1;i<SENSOR_COUNT;i++) {
+    for(uint8_t i=1;i<SENSOR_COUNT;i++) {
     TouchState &stateLeft = touchStates[i-1];
     TouchState &stateRight = touchStates[i];
 
-    movement += sgn(stateRight.touchTime - stateLeft.touchTime);
+    totalTouchState.movement += sgn((signed long) (stateRight.touchTime - stateLeft.touchTime));
   }
-
-
-  if (now - minTouchTime > 5000) {
-    return;
-  }
-
-  if (diffTouchTime < 150) {
-    // Touch
-    publishEvent("touch");
-    cap.writeRegister(0x74,0b01100000);
-    lastLedTime = millis();
-    resetTouchStates();
-    waitForRelease = true;
-  } else if (diffTouchTime < 2000 && movement <= -2) {
-    // Swipe left
-    publishEvent("swipe_left");
-    cap.writeRegister(0x74,0b00100000);
-    lastLedTime = millis();
-    resetTouchStates();
-    waitForRelease = true;
-  } else if (diffTouchTime < 2000 && movement >= 2) {
-    // Swipe right
-    publishEvent("swipe_right");
-    cap.writeRegister(0x74,0b01000000);
-    lastLedTime = millis();
-    resetTouchStates();
-    waitForRelease = true;
-  } else {
-    Serial.print("no touch");
-  }
-  Serial.println();
 }
+
